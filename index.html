@@ -1,0 +1,978 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Epic Planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;padding:0;background:#FAFAF7;height:100%}
+*{box-sizing:border-box}
+#root{height:100vh}
+@keyframes ep-blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+input,button,select,textarea{font-family:inherit}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(26,26,26,0.15);border-radius:3px}
+.story-row:hover .row-actions{opacity:1}
+.row-actions{opacity:0;transition:opacity 120ms}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+// ── Tokens ────────────────────────────────────────────────────
+const C = {
+  bg: '#FAFAF7',
+  ink: '#1A1A1A',
+  soft: 'rgba(26,26,26,0.55)',
+  mute: 'rgba(26,26,26,0.32)',
+  faint: 'rgba(26,26,26,0.12)',
+  hair: 'rgba(26,26,26,0.08)',
+  hairS: 'rgba(26,26,26,0.14)',
+  accent: '#2D5BFF',
+  accentBg: 'rgba(45,91,255,0.09)',
+  accentMid: 'rgba(45,91,255,0.18)',
+  amber: '#B8860B',
+  warn: '#C9761A',
+  warnBg: 'rgba(201,118,26,0.10)',
+  f: '"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+};
+
+// ── Date helpers ──────────────────────────────────────────────
+const sameDay = (a, b) =>
+  a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate();
+const isWknd = d => { const g = d.getDay(); return g===0||g===6; };
+const addDays = (d, n) => { const x=new Date(d); x.setDate(x.getDate()+n); return x; };
+const fmtFull = d => d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+const fmtMon = d => d.toLocaleDateString('en-US',{month:'short'}).toUpperCase();
+const dayLtr = d => 'SMTWTFS'[d.getDay()];
+const toIso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+function nextWorkday() {
+  let d = new Date(); d.setHours(0,0,0,0);
+  while (isWknd(d)) d = addDays(d,1);
+  return d;
+}
+
+// ── Timeline math ─────────────────────────────────────────────
+const WW = 8; // weekend column width px
+const DW = 34; // weekday column width px
+const colW = d => isWknd(d) ? WW : DW;
+
+function buildOffsets(strip) {
+  const o = [0];
+  for (let i=0; i<strip.length; i++) o.push(o[i]+colW(strip[i]));
+  return o;
+}
+
+function buildStrip(start, workingDays) {
+  const out=[]; let c=new Date(start),w=0,safe=400;
+  while (w<workingDays && safe-->0) {
+    out.push(new Date(c));
+    if (!isWknd(c)) w++;
+    c=addDays(c,1);
+  }
+  for (let i=0;i<6;i++){out.push(new Date(c));c=addDays(c,1);}
+  return out;
+}
+
+function spanDays(strip, startIdx, count, holidays, assignees, leaves) {
+  const filled=[];
+  let i=startIdx;
+  while (filled.length<count && i<strip.length) {
+    const d=strip[i];
+    const skip = isWknd(d)
+      || holidays.some(h=>h.active&&sameDay(h.date,d))
+      || (assignees&&assignees.length&&assignees.every(a=>(leaves[a]||[]).some(l=>sameDay(l.date,d))));
+    if (!skip) filled.push(i);
+    i++;
+  }
+  return { startIdx:filled[0]??startIdx, endIdx:filled[filled.length-1]??startIdx, indices:filled };
+}
+
+// Dependency-aware parallel scheduler.
+// Stories with no dependsOn start at day 0 and run in parallel.
+// A story with dependsOn:id starts the day after that story ends.
+function placeAll(stories, strip, holidays, leaves) {
+  const named = stories.filter(s => s.name.trim());
+  if (!named.length) return [];
+
+  // Topological sort (DFS) so dependencies are placed before dependents
+  const byId = Object.fromEntries(named.map(s => [s.id, s]));
+  const visited = new Set();
+  const order = [];
+  function visit(s) {
+    if (visited.has(s.id)) return;
+    visited.add(s.id);
+    if (s.dependsOn && byId[s.dependsOn]) visit(byId[s.dependsOn]);
+    order.push(s);
+  }
+  named.forEach(visit);
+
+  // Place in topo order; track endIdx per story for dependency lookup
+  const endOf = {}; // storyId → endIdx
+  const res = [];
+  for (const s of order) {
+    const startIdx = s.dependsOn && endOf[s.dependsOn] != null
+      ? endOf[s.dependsOn] + 1
+      : 0;
+    const par = Math.max(1, s.devs.length);
+    const days = Math.max(1, Math.ceil(s.effort / par));
+    const span = spanDays(strip, startIdx, days, holidays, s.devs, leaves);
+    endOf[s.id] = span.endIdx;
+    res.push({ story: s, ...span });
+  }
+
+  // Return in original story order (not topo order) so list renders correctly
+  return named.map(s => res.find(r => r.story.id === s.id)).filter(Boolean);
+}
+
+// ── Default / example data ────────────────────────────────────
+const TINTS = ['#E8D5C4','#D4DFEA','#DCE3D0','#E8D4DC','#DDD5E8','#D5E4E8','#E8E4D5'];
+let _uid=0; const uid=()=>`${Date.now()}${++_uid}`;
+
+const DEFAULT_TEAM = [];
+const DEFAULT_HOLIDAYS = [
+  {date:new Date(2026,3,24),name:'Eid al-Fitr',   active:true},
+  {date:new Date(2026,4,1), name:'Labour Day',    active:true},
+  {date:new Date(2026,4,25),name:'Buddha Purnima',active:true},
+];
+const EXAMPLE = {
+  epicName:'Q1 Payments Migration',
+  startDate:new Date(2026,3,20),
+  stories:[
+    {id:'s1',name:'Schema migration',  effort:8, devs:['t1'],dependsOn:null},
+    {id:'s2',name:'API contracts',     effort:6, devs:['t2'],dependsOn:null},
+    {id:'s3',name:'Frontend checkout', effort:10,devs:['t2','t3'],dependsOn:'s2'},
+  ],
+  leaves:{
+    t1:[{date:new Date(2026,3,29),reason:'Planned'}],
+    t3:[{date:new Date(2026,4,4),reason:'Planned'},{date:new Date(2026,4,5),reason:'Planned'}],
+  },
+};
+
+// ── Storage (v6 – multi-epic) ─────────────────────────────────
+const LS6='epic-planner-v6';
+function serial6(st){
+  return {
+    team:st.team,activeEpicId:st.activeEpicId,
+    holidays:st.holidays.map(h=>({...h,date:h.date.getTime()})),
+    leaves:Object.fromEntries(Object.entries(st.leaves).map(([k,vs])=>[k,vs.map(l=>({...l,date:l.date.getTime()}))])),
+    epics:st.epics.map(e=>({...e,startDate:e.startDate.getTime()})),
+  };
+}
+function deserial6(st){
+  return {
+    team:st.team||[],activeEpicId:st.activeEpicId||null,
+    holidays:(st.holidays||[]).map(h=>({...h,date:new Date(h.date)})),
+    leaves:Object.fromEntries(Object.entries(st.leaves||{}).map(([k,vs])=>[k,vs.map(l=>({...l,date:new Date(l.date)}))])),
+    epics:(st.epics||[]).map(e=>({...e,startDate:new Date(e.startDate)})),
+  };
+}
+function load6(){
+  try{const r=localStorage.getItem(LS6);if(r)return deserial6(JSON.parse(r));}catch{}
+  // migrate v5
+  try{
+    const r=localStorage.getItem('epic-planner-v5');
+    if(r){
+      const o=JSON.parse(r);
+      o.startDate=new Date(o.startDate);
+      o.holidays=(o.holidays||[]).map(h=>({...h,date:new Date(h.date)}));
+      o.leaves=Object.fromEntries(Object.entries(o.leaves||{}).map(([k,vs])=>[k,vs.map(l=>({...l,date:new Date(l.date)}))]));
+      const eid=uid();
+      return {team:o.team||[],holidays:o.holidays||DEFAULT_HOLIDAYS,leaves:o.leaves||{},
+        epics:o.epicName||o.stories?.length?[{id:eid,name:o.epicName||'Untitled',startDate:o.startDate,stories:o.stories||[]}]:[],
+        activeEpicId:o.epicName||o.stories?.length?eid:null};
+    }
+  }catch{}
+  return {team:[],holidays:DEFAULT_HOLIDAYS,leaves:{},epics:[],activeEpicId:null};
+}
+function save6(s){try{localStorage.setItem(LS6,JSON.stringify(serial6(s)));}catch{}}
+
+// ── Global date spans (cross-epic busy detection) ─────────────
+function computeGlobalDateSpans(epics,holidays,leaves){
+  const ah=holidays.filter(h=>h.active),res=[];
+  for(const ep of epics){
+    const named=ep.stories.filter(s=>s.name.trim());
+    if(!named.length)continue;
+    const te=named.reduce((s,x)=>s+Math.ceil(x.effort/Math.max(1,x.devs.length)),0);
+    const st=buildStrip(ep.startDate,Math.max(22,te+12));
+    const sp=placeAll(named,st,ah,leaves);
+    for(const s of sp){
+      if(!s.indices||!s.indices.length)continue;
+      res.push({epicId:ep.id,storyId:s.story.id,devIds:s.story.devs,startDate:st[s.startIdx],endDate:st[s.endIdx]});
+    }
+  }
+  return res;
+}
+
+// ── Micro components ──────────────────────────────────────────
+function Av({t,size=20}){
+  return <div style={{width:size,height:size,borderRadius:'50%',background:t.tint,color:C.ink,fontSize:size*.54,fontWeight:600,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{t.initial}</div>;
+}
+function Chip({t,size='md',onRemove}){
+  return (
+    <div style={{display:'inline-flex',alignItems:'center',gap:6,padding:size==='sm'?'2px 8px 2px 3px':'3px 10px 3px 3px',borderRadius:999,background:'#fff',border:`1px solid ${C.hair}`,boxShadow:'0 1px 1px rgba(0,0,0,0.03)',maxWidth:160}}>
+      <Av t={t} size={size==='sm'?16:20}/>
+      <span style={{fontSize:size==='sm'?11:12,fontWeight:500,color:C.ink,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.name}</span>
+      {onRemove&&<span onClick={e=>{e.stopPropagation();onRemove();}} style={{marginLeft:1,color:C.mute,fontSize:13,cursor:'pointer',lineHeight:1,flexShrink:0}}>×</span>}
+    </div>
+  );
+}
+function Toggle({on,onToggle}){
+  return (
+    <div onClick={onToggle} style={{width:28,height:16,borderRadius:999,background:on?C.accent:C.hairS,position:'relative',cursor:'pointer',flexShrink:0}}>
+      <div style={{position:'absolute',top:2,left:on?14:2,width:12,height:12,borderRadius:'50%',background:'#fff',boxShadow:'0 1px 2px rgba(0,0,0,0.15)',transition:'left 120ms'}}/>
+    </div>
+  );
+}
+function GhostInput({value,onChange,onBlur,onKeyDown,placeholder,style:s={},autoFocus}){
+  const ref=useRef();
+  useEffect(()=>{if(autoFocus)ref.current?.focus();},[]);
+  return <input ref={ref} value={value} onChange={onChange} onBlur={onBlur} onKeyDown={onKeyDown} placeholder={placeholder}
+    style={{background:'transparent',border:'none',outline:'none',fontFamily:C.f,padding:0,...s}}/>;
+}
+
+// ── ETA pill ──────────────────────────────────────────────────
+function EtaPill({date}){
+  if(!date)return null;
+  const today=new Date();today.setHours(0,0,0,0);
+  const late=date<today;
+  return(
+    <div style={{display:'inline-flex',alignItems:'center',gap:10,padding:'7px 14px 8px',borderRadius:999,background:late?C.warnBg:C.accent,color:late?C.warn:'#fff',fontSize:15,fontWeight:500,letterSpacing:-0.2,fontVariantNumeric:'tabular-nums',boxShadow:late?'none':'0 1px 2px rgba(45,91,255,0.25),inset 0 -1px 0 rgba(0,0,0,0.08)',border:late?`1px solid ${C.warn}`:'none'}}>
+      <span style={{fontSize:12,fontWeight:400,opacity:.75}}>Ships</span>
+      <span>{fmtFull(date)}</span>
+      {late&&<span style={{fontSize:12,fontWeight:400,opacity:.85}}>· past target</span>}
+    </div>
+  );
+}
+
+// ── Timeline ──────────────────────────────────────────────────
+function Timeline({strip,offsets,totalW,holidays,leaves,team,spans}){
+  const months=useMemo(()=>{
+    const m=[];
+    strip.forEach((d,i)=>{if(i===0||d.getMonth()!==strip[i-1].getMonth())m.push({idx:i,label:fmtMon(d)});});
+    return m;
+  },[strip]);
+
+  const today=useMemo(()=>{const t=new Date();t.setHours(0,0,0,0);return t;},[]);
+  const todayIdx=strip.findIndex(d=>sameDay(d,today));
+
+  const leaveRows=team.filter(t=>(leaves[t.id]||[]).length>0);
+
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:6,overflowX:'auto',overflowY:'visible',paddingBottom:4}}>
+      <div style={{minWidth:totalW}}>
+        {/* Month ribbon */}
+        <div style={{position:'relative',height:16,fontSize:11,fontWeight:500,letterSpacing:1.2,color:C.mute,marginBottom:2}}>
+          {months.map((m,i)=><div key={i} style={{position:'absolute',left:offsets[m.idx]}}>{m.label}</div>)}
+        </div>
+
+        {/* Day cells */}
+        <div style={{position:'relative',height:44,width:totalW,borderTop:`1px solid ${C.hair}`,borderBottom:`1px solid ${C.hair}`}}>
+          {strip.map((d,i)=>{
+            const wk=isWknd(d);
+            const hol=holidays.find(h=>h.active&&sameDay(h.date,d));
+            return(
+              <div key={i} style={{position:'absolute',left:offsets[i],top:0,width:colW(d),height:'100%',borderRight:i<strip.length-1?`1px solid ${C.hair}`:'none',background:wk?'rgba(26,26,26,0.032)':'transparent',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-start',paddingTop:6,overflow:'hidden'}}>
+                {!wk&&<div style={{fontSize:10,fontWeight:500,color:C.soft,letterSpacing:.3}}>{dayLtr(d)}</div>}
+                {!wk&&<div style={{fontSize:11,marginTop:1,color:C.ink,fontWeight:500}}>{d.getDate()}</div>}
+                {hol&&<div title={hol.name} style={{position:'absolute',bottom:5,width:5,height:5,borderRadius:'50%',background:C.amber}}/>}
+              </div>
+            );
+          })}
+          {todayIdx>=0&&<div style={{position:'absolute',left:offsets[todayIdx]+colW(strip[todayIdx])/2,top:-4,bottom:-4,width:1.5,background:C.accent,opacity:.45}}/>}
+        </div>
+
+        {/* Story bars */}
+        <div style={{position:'relative',marginTop:10,width:totalW}}>
+          {spans.map((s,row)=>{
+            const {story,indices}=s;
+            if(!indices||!indices.length)return<div key={story.id} style={{height:26,marginBottom:6}}/>;
+            const first=indices[0],last=indices[indices.length-1];
+            const bl=offsets[first]+2;
+            const bw=(offsets[last+1]-offsets[first])-4;
+            const unassigned=story.devs.length===0;
+            const isFirst=row===0;
+            const inside=bw>120;
+            const bg=unassigned?'rgba(26,26,26,0.04)':isFirst?C.accentBg:'rgba(26,26,26,0.042)';
+            const border=unassigned?`1px dashed ${C.hairS}`:isFirst?`1px solid rgba(45,91,255,0.28)`:`1px solid ${C.hair}`;
+            const col=unassigned?C.mute:isFirst?C.accent:C.ink;
+            const gaps=[];
+            for(let gi=first+1;gi<last;gi++){
+              if(!isWknd(strip[gi])&&holidays.some(h=>h.active&&sameDay(h.date,strip[gi])))gaps.push(gi);
+            }
+            return(
+              <div key={story.id} style={{position:'relative',height:26,marginBottom:6}}>
+                <div style={{position:'absolute',left:bl,top:0,width:bw,height:26,borderRadius:4,background:bg,border,boxShadow:isFirst&&!unassigned?'0 1px 2px rgba(45,91,255,0.10)':'0 1px 2px rgba(0,0,0,0.03)',display:'flex',alignItems:'center',paddingLeft:8,paddingRight:inside?38:8,overflow:'hidden',fontSize:11.5,fontWeight:500,color:col,boxSizing:'border-box'}}>
+                  {inside&&<span style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',flex:'1 1 auto',minWidth:0}}>{story.name}</span>}
+                  {inside&&unassigned&&<span style={{fontSize:10,fontStyle:'italic',color:C.mute,marginLeft:8,flexShrink:0}}>needs owner</span>}
+                </div>
+                {!inside&&<div style={{position:'absolute',left:bl+bw+8,top:0,height:26,display:'flex',alignItems:'center',fontSize:11.5,fontWeight:500,color:col,whiteSpace:'nowrap'}}>{story.name}<span style={{marginLeft:6,opacity:.5,fontWeight:400}}>· {story.effort}d</span></div>}
+                {inside&&<div style={{position:'absolute',left:bl+bw-36,top:7,fontSize:10,fontWeight:500,color:col,opacity:.65,fontVariantNumeric:'tabular-nums'}}>{story.effort}d</div>}
+                {gaps.map((g,gi)=><div key={gi} style={{position:'absolute',left:offsets[g]+1,top:0,width:DW-2,height:26,borderRadius:3,background:C.bg,pointerEvents:'none'}}/>)}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Leave rail */}
+        {leaveRows.length>0&&(
+          <div style={{marginTop:14,paddingTop:10,borderTop:`1px solid ${C.hair}`}}>
+            <div style={{fontSize:9,fontWeight:500,letterSpacing:.8,color:C.mute,textTransform:'uppercase',marginBottom:6}}>Out of office</div>
+            {leaveRows.map(t=>(
+              <div key={t.id} style={{position:'relative',height:22,width:totalW,marginBottom:3}}>
+                <div style={{position:'absolute',left:-68,top:3,width:64,fontSize:11,fontWeight:500,color:C.soft,textAlign:'right'}}>{t.name}</div>
+                <div style={{position:'absolute',left:0,right:0,top:11,height:1,background:C.hair}}/>
+                {(leaves[t.id]||[]).map((l,li)=>{
+                  const idx=strip.findIndex(s=>sameDay(s,l.date));
+                  if(idx<0)return null;
+                  return(
+                    <div key={li} title={l.reason||'Off'} style={{position:'absolute',left:offsets[idx]+2,top:3,width:colW(strip[idx])-4,height:16,borderRadius:3,border:`1px solid ${C.hair}`}}>
+                      <div style={{position:'absolute',inset:0,borderRadius:3,backgroundImage:'repeating-linear-gradient(-45deg,rgba(26,26,26,0.28) 0 1px,transparent 1px 4px)'}}/>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Story list ────────────────────────────────────────────────
+function StoryList({stories,team,spans,globalDateSpans,strip,onUpdate,onDelete,onAdd,autoAdd,onAutoAddDone,onOpenTeamTray}){
+  const [editing,setEditing]=useState(null);
+  const [draft,setDraft]=useState(autoAdd?{id:uid(),name:'',effort:5,devs:[],dependsOn:null}:null);
+
+  useEffect(()=>{
+    if(autoAdd){setDraft({id:uid(),name:'',effort:5,devs:[],dependsOn:null});onAutoAddDone&&onAutoAddDone();}
+  },[autoAdd]);
+
+  return(
+    <div style={{display:'flex',flexDirection:'column'}}>
+      {/* header row */}
+      <div style={{display:'grid',gridTemplateColumns:'22px 1fr 72px 200px 180px 48px',gap:14,padding:'6px 0 8px',borderBottom:`1px solid ${C.hairS}`,fontSize:10,fontWeight:500,letterSpacing:.7,color:C.mute,textTransform:'uppercase'}}>
+        <div/><div>Story</div><div>Effort</div><div>Assignees</div><div>Depends on</div><div/>
+      </div>
+
+      {stories.map((s,i)=>(
+        editing===s.id
+          ?<EditRow key={s.id} story={s} team={team} allStories={stories} spans={spans} globalDateSpans={globalDateSpans} strip={strip}
+              onSave={u=>{onUpdate(s.id,u);setEditing(null);}}
+              onCancel={()=>setEditing(null)}
+              onDelete={()=>{onDelete(s.id);setEditing(null);}}
+            />
+          :<StoryRow key={s.id} story={s} team={team} allStories={stories} spans={spans} globalDateSpans={globalDateSpans} isFirst={i===0}
+              onEdit={()=>{setDraft(null);setEditing(s.id);}}
+              onAssign={devId=>{
+                const devs=s.devs.includes(devId)?s.devs.filter(d=>d!==devId):[...s.devs,devId];
+                onUpdate(s.id,{devs});
+              }}
+              onOpenTeamTray={onOpenTeamTray}
+            />
+      ))}
+
+      {draft!==null
+        ?<EditRow story={draft} team={team} allStories={stories} spans={spans} globalDateSpans={globalDateSpans} strip={strip} isNew
+            onSave={s=>{onAdd(s);setDraft(null);}}
+            onCancel={()=>setDraft(null)}
+          />
+        :<div onClick={()=>{setEditing(null);setDraft({id:uid(),name:'',effort:5,devs:[],dependsOn:null});}}
+            style={{display:'flex',alignItems:'center',gap:10,padding:'13px 0 13px 22px',fontSize:13,fontWeight:500,color:C.mute,cursor:'pointer',borderBottom:`1px solid ${C.hair}`}}>
+            <span style={{fontSize:16,fontWeight:300,lineHeight:1,marginTop:-1}}>+</span>
+            <span>add story</span>
+          </div>
+      }
+    </div>
+  );
+}
+
+function StoryRow({story,team,allStories,spans,globalDateSpans,isFirst,onEdit,onAssign,onOpenTeamTray}){
+  const [popOpen,setPopOpen]=useState(false);
+  const popRef=useRef();
+  const assignees=team.filter(t=>story.devs.includes(t.id));
+  const depStory=allStories.find(s=>s.id===story.dependsOn);
+
+  // Compute which devs are busy (cross-epic via globalDateSpans)
+  const busyDevIds=useMemo(()=>{
+    const myG=globalDateSpans.find(s=>s.storyId===story.id);
+    if(!myG) return new Set();
+    return new Set(
+      globalDateSpans
+        .filter(s=>
+          s.storyId!==story.id &&
+          s.startDate<=myG.endDate &&
+          s.endDate>=myG.startDate
+        )
+        .flatMap(s=>s.devIds)
+    );
+  },[globalDateSpans,story.id]);
+
+  useEffect(()=>{
+    if(!popOpen)return;
+    const h=e=>{if(popRef.current&&!popRef.current.contains(e.target))setPopOpen(false);};
+    document.addEventListener('mousedown',h);
+    return()=>document.removeEventListener('mousedown',h);
+  },[popOpen]);
+
+  const handleAssignClick=()=>{
+    if(team.length===0){onOpenTeamTray();return;}
+    setPopOpen(o=>!o);
+  };
+
+  return(
+    <div className="story-row" style={{display:'grid',gridTemplateColumns:'22px 1fr 72px 200px 180px 48px',alignItems:'center',gap:14,padding:'13px 0',borderBottom:`1px solid ${C.hair}`,position:'relative'}}>
+      <div style={{display:'flex',justifyContent:'center'}}>
+        <div style={{width:6,height:6,borderRadius:'50%',background:isFirst?C.accent:'rgba(26,26,26,0.22)'}}/>
+      </div>
+      <div onClick={onEdit} style={{fontSize:15,fontWeight:500,color:story.name?C.ink:C.mute,letterSpacing:-.2,cursor:'text',fontStyle:story.name?'normal':'italic'}}>
+        {story.name||'Untitled'}
+      </div>
+      <div onClick={onEdit} style={{fontSize:13,fontWeight:500,color:C.soft,fontVariantNumeric:'tabular-nums',cursor:'text'}}>
+        {story.effort} <span style={{opacity:.5,fontWeight:400}}>PD</span>
+      </div>
+      <div ref={popRef} style={{position:'relative'}}>
+        <div onClick={handleAssignClick} style={{display:'flex',gap:6,alignItems:'center',cursor:'pointer',flexWrap:'wrap'}}>
+          {assignees.length===0
+            ?<button style={{padding:'4px 10px',borderRadius:999,border:`1px dashed ${C.hairS}`,background:'transparent',fontSize:12,fontWeight:500,color:C.mute,cursor:'pointer',fontFamily:C.f}}>
+                {team.length===0?'+ add team first':'+ assign'}
+              </button>
+            :assignees.map(t=><Chip key={t.id} t={t} size="sm"/>)
+          }
+        </div>
+        {popOpen&&team.length>0&&(
+          <div style={{position:'absolute',top:'100%',left:0,marginTop:6,zIndex:20,background:'#fff',border:`1px solid ${C.hair}`,borderRadius:10,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',padding:'6px 0',minWidth:180}}>
+            {team.map(t=>{
+              const assigned=story.devs.includes(t.id);
+              const busy=busyDevIds.has(t.id);
+              return(
+                <div key={t.id} onClick={()=>{if(busy&&!assigned)return;onAssign(t.id);}} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 14px',cursor:(busy&&!assigned)?'not-allowed':'pointer',background:assigned?C.accentBg:'transparent',opacity:(busy&&!assigned)?0.45:1}}>
+                  <Av t={t} size={18}/>
+                  <span style={{fontSize:13,fontWeight:500,color:C.ink,flex:1}}>{t.name}</span>
+                  {busy&&<span style={{fontSize:10,fontWeight:500,color:C.warn,background:C.warnBg,padding:'1px 6px',borderRadius:999,flexShrink:0}}>busy</span>}
+                  {assigned&&<span style={{fontSize:12,color:C.accent}}>✓</span>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      {/* Depends on column */}
+      <div onClick={onEdit} style={{cursor:'pointer',minWidth:0,overflow:'hidden'}}>
+        {depStory
+          ?<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,fontWeight:500,color:C.soft,background:'rgba(26,26,26,0.05)',border:`1px solid ${C.hair}`,borderRadius:6,padding:'3px 8px',maxWidth:'100%',boxSizing:'border-box'}}>
+              <span style={{opacity:.55,flexShrink:0}}>after</span>
+              <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',minWidth:0}}>{depStory.name}</span>
+            </span>
+          :<span style={{fontSize:12,color:C.mute}}>—</span>
+        }
+      </div>
+      <div className="row-actions" style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+        <span onClick={onEdit} style={{fontSize:12,color:C.mute,cursor:'pointer'}}>Edit</span>
+      </div>
+    </div>
+  );
+}
+
+function EditRow({story,team,allStories,spans,globalDateSpans,strip,onSave,onCancel,onDelete,isNew}){
+  const [name,setName]=useState(story.name);
+  const [effort,setEffort]=useState(story.effort);
+  const [devs,setDevs]=useState(story.devs);
+  const [dependsOn,setDependsOn]=useState(story.dependsOn||'');
+  const nameRef=useRef();
+  useEffect(()=>{nameRef.current?.focus();},[]);
+
+  const save=()=>{
+    const n=name.trim();
+    if(!n&&isNew){onCancel();return;}
+    onSave({...story,name:n||'Untitled',effort:Math.max(1,Number(effort)||1),devs,dependsOn:dependsOn||null});
+  };
+
+  // Stories that can be a dependency: all others that don't themselves depend on this story (avoid cycles)
+  const eligible=allStories.filter(s=>s.id!==story.id&&s.name.trim());
+
+  // Compute which devs are busy (cross-epic via globalDateSpans)
+  const busyDevIds=useMemo(()=>{
+    if(!globalDateSpans||!globalDateSpans.length) return new Set();
+    const myG=globalDateSpans.find(s=>s.storyId===story.id);
+    let mySD,myED;
+    if(myG){mySD=myG.startDate;myED=myG.endDate;}
+    else{
+      let si;if(dependsOn){const ds=spans.find(s=>s.story.id===dependsOn);si=ds?ds.endIdx+1:0;}else{si=0;}
+      const eff=Math.max(1,Number(effort)||1),par=Math.max(1,devs.length);
+      const ei=si+Math.max(1,Math.ceil(eff/par))-1;
+      mySD=strip[Math.min(si,strip.length-1)];
+      myED=strip[Math.min(ei,strip.length-1)];
+    }
+    return new Set(
+      globalDateSpans.filter(s=>s.storyId!==story.id&&s.startDate<=myED&&s.endDate>=mySD).flatMap(s=>s.devIds)
+    );
+  },[globalDateSpans,spans,strip,story.id,dependsOn,effort,devs]);
+
+  return(
+    <div style={{background:C.accentBg,borderRadius:8,marginBottom:2,border:`1px solid rgba(45,91,255,0.18)`}}>
+      {/* Same grid as header: 22px 1fr 72px 200px 180px 48px */}
+      <div style={{display:'grid',gridTemplateColumns:'22px 1fr 72px 200px 180px 48px',alignItems:'center',gap:14,padding:'10px 6px 8px'}}>
+        <div style={{display:'flex',justifyContent:'center'}}>
+          <div style={{width:6,height:6,borderRadius:'50%',background:C.accent}}/>
+        </div>
+        <GhostInput ref={nameRef} value={name} onChange={e=>setName(e.target.value)}
+          onKeyDown={e=>{if(e.key==='Enter')save();if(e.key==='Escape')onCancel();}}
+          placeholder="Story name…"
+          autoFocus
+          style={{fontSize:15,fontWeight:500,color:C.ink,width:'100%'}}
+        />
+        <div style={{display:'flex',alignItems:'baseline',gap:4}}>
+          <input type="number" min="1" max="999" value={effort} onChange={e=>setEffort(e.target.value)}
+            onKeyDown={e=>{if(e.key==='Enter')save();if(e.key==='Escape')onCancel();}}
+            style={{background:'transparent',border:'none',outline:'none',fontSize:13,fontWeight:500,color:C.ink,width:38,fontFamily:C.f,fontVariantNumeric:'tabular-nums'}}/>
+          <span style={{fontSize:12,color:C.mute}}>PD</span>
+        </div>
+        {/* Assignees */}
+        <div style={{display:'flex',gap:5,flexWrap:'wrap',alignItems:'center',minWidth:0}}>
+          {team.length===0
+            ?<span style={{fontSize:11,color:C.mute,fontStyle:'italic'}}>Add via Team ↓</span>
+            :team.map(t=>{
+              const assigned=devs.includes(t.id);
+              const busy=busyDevIds.has(t.id)&&!assigned;
+              return(
+                <div key={t.id} onClick={()=>setDevs(d=>d.includes(t.id)?d.filter(x=>x!==t.id):[...d,t.id])}
+                  style={{display:'inline-flex',alignItems:'center',gap:3,padding:'2px 7px 2px 3px',borderRadius:999,cursor:'pointer',background:assigned?C.accentMid:busy?'rgba(201,118,26,0.06)':'#fff',border:assigned?`1px solid rgba(45,91,255,0.3)`:busy?`1px solid rgba(201,118,26,0.2)`:`1px solid ${C.hair}`,opacity:busy?0.65:1}}>
+                  <Av t={t} size={14}/>
+                  <span style={{fontSize:11,fontWeight:500,color:assigned?C.accent:busy?C.warn:C.soft}}>{t.name}</span>
+                  {busy&&<span style={{fontSize:9,fontWeight:600,color:C.warn,marginLeft:2}}>busy</span>}
+                </div>
+              );
+            })
+          }
+        </div>
+        {/* Depends on — aligned to DEPENDS ON column */}
+        <select value={dependsOn} onChange={e=>setDependsOn(e.target.value)}
+          style={{background:'#fff',border:`1px solid ${C.hair}`,borderRadius:7,padding:'4px 6px',fontSize:11,color:C.ink,fontFamily:C.f,outline:'none',width:'100%',cursor:'pointer',minWidth:0}}>
+          <option value="">None</option>
+          {eligible.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <div/>{/* placeholder for the last 48px column */}
+      </div>
+      {/* Actions row */}
+      <div style={{display:'flex',alignItems:'center',gap:14,padding:'6px 6px 10px 36px'}}>
+        <span onClick={save} style={{fontSize:13,fontWeight:600,color:C.accent,cursor:'pointer'}}>Save</span>
+        <span onClick={onCancel} style={{fontSize:13,color:C.mute,cursor:'pointer'}}>Cancel</span>
+        {!isNew&&onDelete&&<span onClick={onDelete} style={{fontSize:13,color:C.warn,cursor:'pointer'}}>Delete</span>}
+        {dependsOn&&<span style={{fontSize:12,color:C.soft,marginLeft:4}}>· starts after <strong>{eligible.find(s=>s.id===dependsOn)?.name}</strong> finishes</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── Empty state ───────────────────────────────────────────────
+function EmptyState({onStart,onLoadExample}){
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:40,maxWidth:680,marginTop:8}}>
+      <Step n={1} label="A timeline appears here" hint="Working days only — weekends and holidays skip automatically.">
+        <div style={{height:44,borderTop:`1px dashed ${C.hairS}`,borderBottom:`1px dashed ${C.hairS}`,display:'flex'}}>
+          {Array.from({length:14}).map((_,i)=>(
+            <div key={i} style={{flex:1,borderRight:i<13?`1px dashed ${C.hair}`:'none',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:3}}>
+              <div style={{width:4,height:4,borderRadius:'50%',background:C.faint}}/>
+              <div style={{width:10,height:2,borderRadius:1,background:C.faint}}/>
+            </div>
+          ))}
+        </div>
+      </Step>
+      <Step n={2} label="Add your first story" hint="Name it, set effort in person-days, assign who's working on it.">
+        <div style={{display:'grid',gridTemplateColumns:'22px 1fr 90px 140px',alignItems:'center',gap:14,padding:'13px 0',borderBottom:`1px dashed ${C.hairS}`}}>
+          <div style={{display:'flex',justifyContent:'center'}}><div style={{width:6,height:6,borderRadius:'50%',background:C.faint}}/></div>
+          <div style={{fontSize:14,color:C.mute,fontStyle:'italic'}}>e.g. Schema migration</div>
+          <div style={{fontSize:13,color:C.mute,fontStyle:'italic'}}>5 PD</div>
+          <div style={{display:'inline-flex',alignItems:'center',gap:6,padding:'4px 10px',borderRadius:999,border:`1px dashed ${C.hairS}`,fontSize:12,color:C.mute,fontStyle:'italic'}}>assign someone</div>
+        </div>
+      </Step>
+      <div style={{display:'flex',alignItems:'center',gap:14,marginTop:4}}>
+        <button onClick={onStart} style={{display:'inline-flex',alignItems:'center',gap:8,padding:'9px 18px 10px',borderRadius:999,background:C.accent,color:'#fff',border:'none',fontSize:14,fontWeight:500,cursor:'pointer',fontFamily:C.f,boxShadow:'0 1px 2px rgba(45,91,255,0.25),inset 0 -1px 0 rgba(0,0,0,0.08)'}}>
+          <span style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:16,height:16,borderRadius:'50%',background:'rgba(255,255,255,0.18)',fontSize:12,fontWeight:400}}>+</span>
+          Start with a story
+        </button>
+        <span style={{color:C.mute,fontSize:13}}>or</span>
+        <button onClick={onLoadExample} style={{background:'transparent',border:'none',fontFamily:C.f,fontSize:13,color:C.accent,fontWeight:500,textDecoration:'underline',textDecorationColor:'rgba(45,91,255,0.28)',textUnderlineOffset:3,cursor:'pointer',padding:0}}>load the example</button>
+        <div style={{flex:1}}/>
+        <div style={{fontSize:12,color:C.mute,display:'inline-flex',alignItems:'center',gap:8}}>
+          <kbd style={{padding:'2px 7px',borderRadius:5,background:'#fff',border:`1px solid ${C.hair}`,fontSize:10.5,fontWeight:500,color:C.soft,fontFamily:C.f}}>Tab</kbd>
+          works too
+        </div>
+      </div>
+    </div>
+  );
+}
+function Step({n,label,hint,children}){
+  return(
+    <div style={{display:'flex',gap:18}}>
+      <div style={{flexShrink:0,width:22,height:22,borderRadius:'50%',border:`1px solid ${C.hairS}`,background:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:500,color:C.soft,marginTop:2}}>{n}</div>
+      <div style={{flex:1}}>
+        <div style={{fontSize:13,fontWeight:500,color:C.ink,marginBottom:2}}>{label}</div>
+        <div style={{fontSize:12,color:C.mute,marginBottom:12}}>{hint}</div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ── Trays ─────────────────────────────────────────────────────
+function TrayHeader({title,hint}){
+  return(
+    <div style={{display:'flex',alignItems:'baseline',gap:14,marginBottom:16}}>
+      <div style={{fontSize:14,fontWeight:600,letterSpacing:-.2}}>{title}</div>
+      <div style={{fontSize:12,color:C.mute}}>{hint}</div>
+    </div>
+  );
+}
+
+function TeamTray({team,onAdd,onRemove}){
+  const [adding,setAdding]=useState(false);
+  const [name,setName]=useState('');
+  const add=()=>{
+    const n=name.trim();if(!n){setAdding(false);return;}
+    onAdd({id:uid(),name:n,initial:n[0].toUpperCase(),tint:TINTS[team.length%TINTS.length]});
+    setName('');setAdding(false);
+  };
+  return(
+    <div>
+      <TrayHeader title="Team" hint="People you can assign to stories"/>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+        {team.map(t=><Chip key={t.id} t={t} onRemove={()=>onRemove(t.id)}/>)}
+        {adding
+          ?<div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <input autoFocus value={name} onChange={e=>setName(e.target.value)}
+                onKeyDown={e=>{if(e.key==='Enter')add();if(e.key==='Escape'){setAdding(false);setName('');}}}
+                placeholder="Name…"
+                style={{background:'#fff',border:`1px solid ${C.hair}`,outline:`2px solid ${C.accent}`,borderRadius:8,padding:'5px 10px',fontSize:13,fontFamily:C.f}}/>
+              <button onClick={add} style={{padding:'6px 12px',borderRadius:999,background:C.accent,color:'#fff',border:'none',fontSize:13,fontWeight:500,cursor:'pointer',fontFamily:C.f}}>Add</button>
+              <button onClick={()=>{setAdding(false);setName('');}} style={{padding:'6px 12px',borderRadius:999,background:'transparent',border:`1px dashed ${C.hairS}`,fontSize:13,color:C.mute,cursor:'pointer',fontFamily:C.f}}>Cancel</button>
+            </div>
+          :<button onClick={()=>setAdding(true)} style={{padding:'4px 12px',borderRadius:999,border:`1px dashed ${C.hairS}`,background:'transparent',fontSize:12,fontWeight:500,color:C.mute,cursor:'pointer',fontFamily:C.f}}>+ add teammate</button>
+        }
+      </div>
+    </div>
+  );
+}
+
+function HolidaysTray({holidays,onToggle,onDelete,onAdd}){
+  const [adding,setAdding]=useState(false);
+  const [dd,setDd]=useState('');const [dn,setDn]=useState('');
+  const add=()=>{
+    if(!dd||!dn.trim()){setAdding(false);return;}
+    onAdd({date:new Date(dd+'T12:00:00'),name:dn.trim(),active:true});
+    setDd('');setDn('');setAdding(false);
+  };
+  return(
+    <div>
+      <TrayHeader title="Holidays" hint="Active holidays are skipped in the plan. Toggle off any the team works through."/>
+      <div style={{maxWidth:560}}>
+        <div style={{display:'flex',justifyContent:'space-between',marginBottom:8,fontSize:10,fontWeight:500,letterSpacing:.8,color:C.mute,textTransform:'uppercase'}}>
+          <span>Holiday</span><span style={{paddingRight:48}}>Skip · Remove</span>
+        </div>
+        {holidays.map((h,i)=>(
+          <div key={i} style={{display:'grid',gridTemplateColumns:'10px 130px 1fr auto auto',alignItems:'center',gap:12,padding:'9px 0',borderBottom:i<holidays.length-1?`1px solid ${C.hair}`:'none',fontSize:13,opacity:h.active?1:.5}}>
+            <div style={{width:6,height:6,borderRadius:'50%',background:h.active?C.amber:'transparent',border:h.active?'none':`1px solid ${C.hairS}`}}/>
+            <div style={{color:C.soft,fontVariantNumeric:'tabular-nums',textDecoration:h.active?'none':'line-through'}}>{fmtFull(h.date)}</div>
+            <div style={{color:C.ink,fontWeight:500,textDecoration:h.active?'none':'line-through'}}>{h.name}</div>
+            <Toggle on={h.active} onToggle={()=>onToggle(i)}/>
+            <div onClick={()=>onDelete(i)} style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center',color:C.mute,cursor:'pointer',fontSize:16,lineHeight:1,borderRadius:3}}
+              onMouseEnter={e=>{e.currentTarget.style.color=C.warn;e.currentTarget.style.background='rgba(201,118,26,0.08)';}}
+              onMouseLeave={e=>{e.currentTarget.style.color=C.mute;e.currentTarget.style.background='transparent';}}>×</div>
+          </div>
+        ))}
+        {adding
+          ?<div style={{display:'flex',gap:8,alignItems:'center',paddingTop:12,flexWrap:'wrap'}}>
+              <input type="date" value={dd} onChange={e=>setDd(e.target.value)} style={{border:`1px solid ${C.hair}`,outline:`2px solid ${C.accent}`,borderRadius:8,padding:'5px 10px',fontFamily:C.f,fontSize:13}}/>
+              <input value={dn} onChange={e=>setDn(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')add();if(e.key==='Escape')setAdding(false);}} placeholder="Holiday name…" style={{border:`1px solid ${C.hair}`,outline:`2px solid ${C.accent}`,borderRadius:8,padding:'5px 10px',fontFamily:C.f,fontSize:13,flex:1,minWidth:160}}/>
+              <button onClick={add} style={{padding:'6px 12px',borderRadius:999,background:C.accent,color:'#fff',border:'none',fontSize:13,fontWeight:500,cursor:'pointer',fontFamily:C.f}}>Add</button>
+              <button onClick={()=>setAdding(false)} style={{padding:'6px 12px',borderRadius:999,background:'transparent',border:`1px dashed ${C.hairS}`,fontSize:13,color:C.mute,cursor:'pointer',fontFamily:C.f}}>Cancel</button>
+            </div>
+          :<div onClick={()=>setAdding(true)} style={{display:'flex',alignItems:'center',gap:8,paddingTop:10,fontSize:12,color:C.mute,fontWeight:500,cursor:'pointer'}}>
+              <span style={{fontSize:14,fontWeight:300}}>+</span><span>add holiday</span>
+            </div>
+        }
+      </div>
+    </div>
+  );
+}
+
+function LeavesTray({team,leaves,onAdd,onDelete}){
+  const [adding,setAdding]=useState(false);
+  const [dev,setDev]=useState('');const [dd,setDd]=useState('');const [reason,setReason]=useState('');
+  const entries=[];
+  for(const t of team)for(const l of(leaves[t.id]||[]))entries.push({t,l});
+  entries.sort((a,b)=>a.l.date-b.l.date);
+  const add=()=>{
+    if(!dev||!dd){setAdding(false);return;}
+    onAdd(dev,{date:new Date(dd+'T12:00:00'),reason:reason.trim()||'Day off'});
+    setDev('');setDd('');setReason('');setAdding(false);
+  };
+  return(
+    <div>
+      <TrayHeader title="Leaves" hint="Days off skip in the plan automatically — add anytime, even mid-epic."/>
+      <div style={{maxWidth:600}}>
+        {entries.map(({t,l},i)=>(
+          <div key={i} style={{display:'grid',gridTemplateColumns:'150px 130px 1fr auto',alignItems:'center',gap:14,padding:'9px 0',borderBottom:i<entries.length-1?`1px solid ${C.hair}`:'none',fontSize:13}}>
+            <Chip t={t} size="sm"/>
+            <div style={{color:C.ink,fontVariantNumeric:'tabular-nums',fontWeight:500}}>{fmtFull(l.date)}</div>
+            <div style={{color:C.soft,fontSize:12}}>{l.reason}</div>
+            <div onClick={()=>onDelete(t.id,l.date)} style={{color:C.mute,cursor:'pointer',fontSize:16,lineHeight:1}}
+              onMouseEnter={e=>{e.currentTarget.style.color=C.warn;}} onMouseLeave={e=>{e.currentTarget.style.color=C.mute;}}>×</div>
+          </div>
+        ))}
+        {entries.length===0&&!adding&&<div style={{fontSize:13,color:C.mute,paddingBottom:8}}>No leaves scheduled yet.</div>}
+        {adding
+          ?<div style={{display:'flex',gap:8,alignItems:'center',paddingTop:12,flexWrap:'wrap'}}>
+              <select value={dev} onChange={e=>setDev(e.target.value)} style={{border:`1px solid ${C.hair}`,outline:`2px solid ${C.accent}`,borderRadius:8,padding:'5px 10px',fontFamily:C.f,fontSize:13}}>
+                <option value="">Pick teammate…</option>
+                {team.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+              <input type="date" value={dd} onChange={e=>setDd(e.target.value)} style={{border:`1px solid ${C.hair}`,outline:`2px solid ${C.accent}`,borderRadius:8,padding:'5px 10px',fontFamily:C.f,fontSize:13}}/>
+              <input value={reason} onChange={e=>setReason(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')add();if(e.key==='Escape')setAdding(false);}} placeholder="Reason (optional)" style={{border:`1px solid ${C.hair}`,outline:`2px solid ${C.accent}`,borderRadius:8,padding:'5px 10px',fontFamily:C.f,fontSize:13,flex:1,minWidth:120}}/>
+              <button onClick={add} style={{padding:'6px 12px',borderRadius:999,background:C.accent,color:'#fff',border:'none',fontSize:13,fontWeight:500,cursor:'pointer',fontFamily:C.f}}>Add</button>
+              <button onClick={()=>setAdding(false)} style={{padding:'6px 12px',borderRadius:999,background:'transparent',border:`1px dashed ${C.hairS}`,fontSize:13,color:C.mute,cursor:'pointer',fontFamily:C.f}}>Cancel</button>
+            </div>
+          :<div onClick={()=>setAdding(true)} style={{display:'flex',alignItems:'center',gap:8,paddingTop:10,fontSize:12,color:C.mute,fontWeight:500,cursor:'pointer'}}>
+              <span style={{fontSize:14,fontWeight:300}}>+</span><span>add leave</span>
+            </div>
+        }
+      </div>
+    </div>
+  );
+}
+
+// ── Epic sidebar ──────────────────────────────────────────────
+function EpicSidebar({epics,activeId,onSelect,onAdd,onDelete}){
+  return(
+    <div style={{width:220,borderRight:`1px solid ${C.hair}`,background:'#fff',display:'flex',flexDirection:'column',flexShrink:0,height:'100%'}}>
+      <div style={{padding:'24px 18px 14px',fontSize:10,fontWeight:600,letterSpacing:1.4,textTransform:'uppercase',color:C.mute}}>Epics</div>
+      <div style={{flex:1,overflowY:'auto',padding:'0 8px'}}>
+        {epics.map(e=>{
+          const active=e.id===activeId;
+          const sc=e.stories.filter(s=>s.name.trim()).length;
+          return(
+            <div key={e.id} className="story-row" onClick={()=>onSelect(e.id)}
+              style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',borderRadius:8,cursor:'pointer',marginBottom:2,
+                background:active?C.accentBg:'transparent',border:active?'1px solid rgba(45,91,255,0.15)':'1px solid transparent'}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:active?600:500,color:active?C.accent:C.ink,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{e.name||'Untitled'}</div>
+                <div style={{fontSize:11,color:C.mute,marginTop:2}}>{sc} {sc===1?'story':'stories'}</div>
+              </div>
+              <div className="row-actions" onClick={ev=>{ev.stopPropagation();onDelete(e.id);}}
+                style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center',color:C.mute,fontSize:14,borderRadius:4,cursor:'pointer',flexShrink:0}}
+                onMouseEnter={ev=>{ev.currentTarget.style.color=C.warn;}} onMouseLeave={ev=>{ev.currentTarget.style.color=C.mute;}}>×</div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{padding:'12px 18px',borderTop:`1px solid ${C.hair}`}}>
+        <div onClick={onAdd}
+          style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:500,color:C.mute,border:`1px dashed ${C.hairS}`,justifyContent:'center'}}>
+          <span style={{fontSize:16,fontWeight:300,lineHeight:1}}>+</span> New epic
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── App ───────────────────────────────────────────────────────
+const INIT6=load6();
+
+function App(){
+  const [team,setTeam]=useState(INIT6.team);
+  const [holidays,setHolidays]=useState(INIT6.holidays);
+  const [leaves,setLeaves]=useState(INIT6.leaves);
+  const [epics,setEpics]=useState(INIT6.epics);
+  const [activeEpicId,setActiveEpicId]=useState(INIT6.activeEpicId);
+  const [trayOpen,setTrayOpen]=useState(null);
+  const [editingName,setEditingName]=useState(false);
+  const [autoAdd,setAutoAdd]=useState(false);
+
+  // Persist
+  useEffect(()=>{save6({team,holidays,leaves,epics,activeEpicId});},[team,holidays,leaves,epics,activeEpicId]);
+
+  // Active epic
+  const epic=epics.find(e=>e.id===activeEpicId)||null;
+
+  // Per-epic derived
+  const activeHols=useMemo(()=>holidays.filter(h=>h.active),[holidays]);
+  const namedStories=useMemo(()=>epic?epic.stories.filter(s=>s.name.trim()):[],[epic]);
+  const totalEffort=useMemo(()=>namedStories.reduce((sum,s)=>sum+Math.ceil(s.effort/Math.max(1,s.devs.length)),0),[namedStories]);
+  const startDate=epic?epic.startDate:nextWorkday();
+  const strip=useMemo(()=>buildStrip(startDate,Math.max(22,totalEffort+12)),[startDate,totalEffort]);
+  const offsets=useMemo(()=>buildOffsets(strip),[strip]);
+  const totalW=offsets[offsets.length-1];
+  const spans=useMemo(()=>placeAll(namedStories,strip,activeHols,leaves),[namedStories,strip,activeHols,leaves]);
+  const etaDate=useMemo(()=>spans.length?strip[spans.reduce((m,s)=>Math.max(m,s.endIdx),0)]:null,[spans,strip]);
+
+  // Global date spans (cross-epic)
+  const globalDateSpans=useMemo(()=>computeGlobalDateSpans(epics,holidays,leaves),[epics,holidays,leaves]);
+
+  const hasStories=namedStories.length>0;
+
+  // Epic CRUD
+  const addEpic=()=>{const id=uid();setEpics(es=>[...es,{id,name:'',startDate:nextWorkday(),stories:[]}]);setActiveEpicId(id);setEditingName(true);setTrayOpen(null);};
+  const deleteEpic=(id)=>{if(!confirm('Delete this epic and all its stories?'))return;setEpics(es=>{const next=es.filter(e=>e.id!==id);if(activeEpicId===id)setActiveEpicId(next[0]?.id||null);return next;});};
+  const updateEpic=(u)=>setEpics(es=>es.map(e=>e.id===activeEpicId?{...e,...u}:e));
+
+  const loadExample=()=>{
+    const id=uid();
+    setEpics(es=>[...es,{id,name:EXAMPLE.epicName,startDate:EXAMPLE.startDate,stories:EXAMPLE.stories}]);
+    setLeaves(lv=>{const n={...lv};for(const[k,vs]of Object.entries(EXAMPLE.leaves))n[k]=[...(n[k]||[]),...vs];return n;});
+    setActiveEpicId(id);setTrayOpen(null);
+  };
+
+  const handleReset=()=>{
+    if(!confirm('Delete this epic and all its stories?'))return;
+    deleteEpic(activeEpicId);
+  };
+
+  // No epic selected
+  if(!epic){
+    return(
+      <div style={{height:'100vh',display:'flex',fontFamily:C.f,background:C.bg,color:C.ink,fontSize:14}}>
+        <EpicSidebar epics={epics} activeId={activeEpicId} onSelect={setActiveEpicId} onAdd={addEpic} onDelete={deleteEpic}/>
+        <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:20}}>
+          <div style={{fontSize:28,fontWeight:600,letterSpacing:-.7}}>Epic Planner</div>
+          <div style={{fontSize:14,color:C.mute,maxWidth:360,textAlign:'center',lineHeight:1.6}}>
+            Create your first epic to start planning — break work into stories, assign developers, and see your timeline.
+          </div>
+          <div style={{display:'flex',gap:12,marginTop:8}}>
+            <button onClick={addEpic} style={{display:'inline-flex',alignItems:'center',gap:8,padding:'9px 18px 10px',borderRadius:999,background:C.accent,color:'#fff',border:'none',fontSize:14,fontWeight:500,cursor:'pointer',fontFamily:C.f,boxShadow:'0 1px 2px rgba(45,91,255,0.25)'}}>+ New epic</button>
+            <button onClick={loadExample} style={{background:'transparent',border:'none',fontFamily:C.f,fontSize:13,color:C.accent,fontWeight:500,textDecoration:'underline',textDecorationColor:'rgba(45,91,255,0.28)',textUnderlineOffset:3,cursor:'pointer',padding:0}}>load example</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const hasContent=!!(epic.name||epic.stories.length);
+
+  return(
+    <div style={{height:'100vh',display:'flex',fontFamily:C.f,background:C.bg,color:C.ink,fontSize:14}}>
+      <EpicSidebar epics={epics} activeId={activeEpicId} onSelect={id=>{setActiveEpicId(id);setEditingName(false);setAutoAdd(false);}} onAdd={addEpic} onDelete={deleteEpic}/>
+
+      <div style={{flex:1,display:'flex',flexDirection:'column',minWidth:0}}>
+        {/* Main scrollable area */}
+        <div style={{flex:1,overflowY:'auto',overflowX:'hidden',padding:'48px 60px 0',minHeight:0}}>
+
+          {/* Header */}
+          <div style={{display:'flex',flexDirection:'column',gap:14,marginBottom:40}}>
+            <div style={{display:'flex',alignItems:'center',gap:16}}>
+              {editingName
+                ?<input autoFocus value={epic.name} onChange={e=>updateEpic({name:e.target.value})}
+                    onBlur={()=>setEditingName(false)}
+                    onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape')setEditingName(false);}}
+                    placeholder="Epic name…"
+                    style={{background:'transparent',border:'none',outline:'none',fontSize:34,fontWeight:600,letterSpacing:-.9,color:C.ink,fontFamily:C.f,padding:0,width:'100%',minWidth:200}}/>
+                :epic.name
+                  ?<div onClick={()=>setEditingName(true)} style={{display:'flex',alignItems:'baseline',gap:10,cursor:'text'}}>
+                      <span style={{fontSize:34,fontWeight:600,letterSpacing:-.9}}>{epic.name}</span>
+                      <svg width="15" height="15" viewBox="0 0 16 16" style={{opacity:.28,flexShrink:0}}>
+                        <path d="M10.5 2.5 L13.5 5.5 L6 13 L2 14 L3 10 Z" fill="none" stroke={C.ink} strokeWidth="1.2" strokeLinejoin="round"/>
+                      </svg>
+                    </div>
+                  :<div style={{display:'flex',flexDirection:'column',gap:8}}>
+                      <div style={{fontSize:11,fontWeight:500,letterSpacing:1.4,textTransform:'uppercase',color:C.mute}}>New epic</div>
+                      <div onClick={()=>setEditingName(true)} style={{fontSize:30,fontWeight:500,letterSpacing:-.7,color:C.mute,lineHeight:1.1,cursor:'text'}}>
+                        Name your epic to begin
+                        <span style={{display:'inline-block',width:2,height:26,background:C.ink,marginLeft:6,verticalAlign:-3,animation:'ep-blink 1s steps(2) infinite'}}/>
+                      </div>
+                    </div>
+              }
+              <div style={{flex:1}}/>
+              {hasContent&&<button onClick={handleReset} style={{padding:'5px 12px',borderRadius:8,background:'transparent',border:`1px solid ${C.hair}`,fontSize:12,color:C.mute,cursor:'pointer',fontFamily:C.f}}>Delete</button>}
+            </div>
+
+            {hasStories&&etaDate&&(
+              <div style={{display:'flex',alignItems:'center',gap:14}}>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <span style={{fontSize:13,color:C.soft}}>Starts</span>
+                  <input type="date" value={toIso(startDate)} onChange={e=>{const d=new Date(e.target.value+'T12:00:00');if(!isNaN(d))updateEpic({startDate:d});}}
+                    style={{background:'transparent',border:'none',outline:'none',fontSize:13,color:C.soft,fontFamily:C.f,cursor:'pointer',padding:0}}/>
+                </div>
+                <div style={{width:18,height:1,background:C.faint}}/>
+                <EtaPill date={etaDate}/>
+              </div>
+            )}
+          </div>
+
+          {/* Timeline */}
+          {hasStories&&(
+            <div style={{marginLeft:-60,paddingLeft:60,marginRight:-60,paddingRight:60,overflowX:'auto',marginBottom:40}}>
+              <div style={{minWidth:totalW,paddingRight:24}}>
+                <Timeline strip={strip} offsets={offsets} totalW={totalW} holidays={activeHols} leaves={leaves} team={team} spans={spans}/>
+              </div>
+            </div>
+          )}
+
+          {/* Stories */}
+          {hasContent||autoAdd
+            ?<StoryList
+                stories={epic.stories}
+                team={team}
+                spans={spans}
+                globalDateSpans={globalDateSpans}
+                strip={strip}
+                autoAdd={autoAdd}
+                onAutoAddDone={()=>setAutoAdd(false)}
+                onUpdate={(id,u)=>updateEpic({stories:epic.stories.map(s=>s.id===id?{...s,...u}:s)})}
+                onDelete={id=>updateEpic({stories:epic.stories.filter(s=>s.id!==id)})}
+                onAdd={s=>updateEpic({stories:[...epic.stories,s]})}
+                onOpenTeamTray={()=>setTrayOpen('team')}
+              />
+            :<EmptyState
+                onStart={()=>{if(!epic.name)setEditingName(true);setAutoAdd(true);}}
+                onLoadExample={loadExample}
+              />
+          }
+          <div style={{height:80}}/>
+        </div>
+
+        {/* Tray */}
+        {trayOpen&&(
+          <div style={{background:'#FFFDFA',borderTop:`1px solid ${C.hairS}`,boxShadow:'0 -12px 32px rgba(0,0,0,0.06),0 -2px 6px rgba(0,0,0,0.03)',padding:'22px 60px 24px',maxHeight:320,overflowY:'auto',flexShrink:0}}>
+            {trayOpen==='team'&&<TeamTray team={team} onAdd={t=>setTeam(tt=>[...tt,t])} onRemove={id=>setTeam(tt=>tt.filter(t=>t.id!==id))}/>}
+            {trayOpen==='holidays'&&<HolidaysTray holidays={holidays} onToggle={i=>setHolidays(hs=>hs.map((h,j)=>j===i?{...h,active:!h.active}:h))} onDelete={i=>setHolidays(hs=>hs.filter((_,j)=>j!==i))} onAdd={h=>setHolidays(hs=>[...hs,h])}/>}
+            {trayOpen==='leaves'&&<LeavesTray team={team} leaves={leaves} onAdd={(devId,l)=>setLeaves(lv=>({...lv,[devId]:[...(lv[devId]||[]),l]}))} onDelete={(devId,date)=>setLeaves(lv=>({...lv,[devId]:(lv[devId]||[]).filter(l=>!sameDay(l.date,date))}))}/>}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{height:52,borderTop:`1px solid ${C.hair}`,background:C.bg,display:'flex',alignItems:'center',padding:'0 60px',gap:28,flexShrink:0,zIndex:2}}>
+          {[{id:'team',label:'Team'},{id:'holidays',label:'Holidays'},{id:'leaves',label:'Leaves'}].map(it=>{
+            const active=trayOpen===it.id;
+            return(
+              <div key={it.id} onClick={()=>setTrayOpen(t=>t===it.id?null:it.id)} style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:13,fontWeight:500,color:active?C.accent:C.soft,cursor:'pointer',position:'relative',height:52}}>
+                {it.label}
+                {it.id==='team'&&<span style={{fontSize:11,color:active?C.accent:C.mute,opacity:.8}}>{team.length}</span>}
+                {it.id==='holidays'&&<span style={{fontSize:11,color:active?C.accent:C.mute,opacity:.8}}>{holidays.filter(h=>h.active).length}</span>}
+                {it.id==='leaves'&&<span style={{fontSize:11,color:active?C.accent:C.mute,opacity:.8}}>{Object.values(leaves).reduce((s,a)=>s+a.length,0)}</span>}
+                {active&&<div style={{position:'absolute',left:0,right:0,bottom:0,height:2,background:C.accent}}/>}
+              </div>
+            );
+          })}
+          <div style={{flex:1}}/>
+          <div style={{fontSize:11,color:C.mute,letterSpacing:.4}}>Epic Planner</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
