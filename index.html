@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Epic Planner</title>
+<title>Brief</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -757,7 +757,10 @@ function LeavesTray({team,leaves,onAdd,onDelete}){
 function EpicSidebar({epics,activeId,onSelect,onAdd,onDelete}){
   return(
     <div style={{width:220,borderRight:`1px solid ${C.hair}`,background:'#fff',display:'flex',flexDirection:'column',flexShrink:0,height:'100%'}}>
-      <div style={{padding:'24px 18px 14px',fontSize:10,fontWeight:600,letterSpacing:1.4,textTransform:'uppercase',color:C.mute}}>Epics</div>
+      <div style={{padding:'20px 18px 16px',borderBottom:`1px solid ${C.hair}`,cursor:'pointer'}} onClick={()=>onSelect(null)}>
+        <div style={{fontSize:20,fontWeight:700,letterSpacing:-.5,color:C.ink}}>Brief</div>
+        <div style={{fontSize:10,fontWeight:500,letterSpacing:1.2,textTransform:'uppercase',color:C.mute,marginTop:4}}>Epics</div>
+      </div>
       <div style={{flex:1,overflowY:'auto',padding:'0 8px'}}>
         {epics.map(e=>{
           const active=e.id===activeId;
@@ -839,19 +842,56 @@ function App(){
     deleteEpic(activeEpicId);
   };
 
-  // No epic selected
+  // No epic selected — onboarding
   if(!epic){
+    const steps=[
+      {icon:'📋',title:'Create Epics',desc:'Organize your work into separate epics — each with its own stories, timeline, and ship date.'},
+      {icon:'🧩',title:'Break Into Stories',desc:'Add stories with effort estimates (person-days), set dependencies, and watch the timeline build itself.'},
+      {icon:'👥',title:'Assign Your Team',desc:'Add developers, assign them to stories, and see who\'s busy across all epics at a glance.'},
+      {icon:'📅',title:'See Your Timeline',desc:'A visual Gantt chart auto-schedules work around weekends, holidays, and leaves — giving you a real ship date.'},
+    ];
     return(
       <div style={{height:'100vh',display:'flex',fontFamily:C.f,background:C.bg,color:C.ink,fontSize:14}}>
         <EpicSidebar epics={epics} activeId={activeEpicId} onSelect={setActiveEpicId} onAdd={addEpic} onDelete={deleteEpic}/>
-        <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:20}}>
-          <div style={{fontSize:28,fontWeight:600,letterSpacing:-.7}}>Epic Planner</div>
-          <div style={{fontSize:14,color:C.mute,maxWidth:360,textAlign:'center',lineHeight:1.6}}>
-            Create your first epic to start planning — break work into stories, assign developers, and see your timeline.
+        <div style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',alignItems:'center',padding:'60px 40px 40px'}}>
+          {/* Hero */}
+          <div style={{textAlign:'center',maxWidth:520,marginBottom:48}}>
+            <div style={{fontSize:48,fontWeight:800,letterSpacing:-1.5,color:C.ink,marginBottom:6}}>Brief</div>
+            <div style={{fontSize:15,color:C.accent,fontWeight:500,marginBottom:20}}>Epic planning, simplified.</div>
+            <div style={{fontSize:15,color:C.soft,lineHeight:1.7}}>
+              Break your work into stories, assign developers, and get a realistic delivery date — accounting for weekends, holidays, and team availability.
+            </div>
           </div>
-          <div style={{display:'flex',gap:12,marginTop:8}}>
-            <button onClick={addEpic} style={{display:'inline-flex',alignItems:'center',gap:8,padding:'9px 18px 10px',borderRadius:999,background:C.accent,color:'#fff',border:'none',fontSize:14,fontWeight:500,cursor:'pointer',fontFamily:C.f,boxShadow:'0 1px 2px rgba(45,91,255,0.25)'}}>+ New epic</button>
-            <button onClick={loadExample} style={{background:'transparent',border:'none',fontFamily:C.f,fontSize:13,color:C.accent,fontWeight:500,textDecoration:'underline',textDecorationColor:'rgba(45,91,255,0.28)',textUnderlineOffset:3,cursor:'pointer',padding:0}}>load example</button>
+
+          {/* Steps */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,maxWidth:560,width:'100%',marginBottom:40}}>
+            {steps.map((s,i)=>(
+              <div key={i} style={{background:'#fff',border:`1px solid ${C.hair}`,borderRadius:12,padding:'20px 18px',display:'flex',flexDirection:'column',gap:8}}>
+                <div style={{display:'flex',alignItems:'center',gap:10}}>
+                  <span style={{fontSize:22}}>{s.icon}</span>
+                  <div style={{fontSize:10,fontWeight:600,color:C.mute,letterSpacing:1,textTransform:'uppercase'}}>Step {i+1}</div>
+                </div>
+                <div style={{fontSize:14,fontWeight:600,color:C.ink}}>{s.title}</div>
+                <div style={{fontSize:12,color:C.soft,lineHeight:1.6}}>{s.desc}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Features list */}
+          <div style={{display:'flex',gap:20,flexWrap:'wrap',justifyContent:'center',marginBottom:36}}>
+            {['Cross-epic busy detection','Weekend & holiday aware','Dependency chains','Person-day estimates','Leave management','Smart timeline'].map(f=>(
+              <div key={f} style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:C.soft}}>
+                <div style={{width:5,height:5,borderRadius:'50%',background:C.accent,opacity:.5}}/>
+                {f}
+              </div>
+            ))}
+          </div>
+
+          {/* CTA */}
+          <div style={{display:'flex',gap:14,alignItems:'center'}}>
+            <button onClick={addEpic} style={{display:'inline-flex',alignItems:'center',gap:8,padding:'11px 24px 12px',borderRadius:999,background:C.accent,color:'#fff',border:'none',fontSize:15,fontWeight:600,cursor:'pointer',fontFamily:C.f,boxShadow:'0 2px 8px rgba(45,91,255,0.25)',letterSpacing:-.2}}>+ Create your first epic</button>
+            <span style={{fontSize:12,color:C.mute}}>or</span>
+            <button onClick={loadExample} style={{background:'transparent',border:`1px solid ${C.hair}`,fontFamily:C.f,fontSize:13,color:C.soft,fontWeight:500,cursor:'pointer',padding:'8px 16px',borderRadius:999}}>Load example</button>
           </div>
         </div>
       </div>
@@ -965,7 +1005,7 @@ function App(){
             );
           })}
           <div style={{flex:1}}/>
-          <div style={{fontSize:11,color:C.mute,letterSpacing:.4}}>Epic Planner</div>
+          <div style={{fontSize:11,color:C.mute,letterSpacing:.4}}>Brief</div>
         </div>
       </div>
     </div>
