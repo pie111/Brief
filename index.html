@@ -18,6 +18,18 @@ input,button,select,textarea{font-family:inherit}
 ::-webkit-scrollbar-thumb{background:rgba(26,26,26,0.15);border-radius:3px}
 .story-row:hover .row-actions{opacity:1}
 .row-actions{opacity:0;transition:opacity 120ms}
+@media(max-width:768px){
+  .onboard-wrap{flex-direction:column!important}
+  .onboard-sidebar{display:none!important}
+  .onboard-main{padding:36px 20px 32px!important}
+  .onboard-hero{font-size:36px!important}
+  .onboard-tagline{font-size:14px!important}
+  .onboard-steps{grid-template-columns:1fr!important;max-width:100%!important}
+  .onboard-features{gap:12px!important}
+  .onboard-cta{flex-direction:column!important;width:100%}
+  .onboard-cta button{width:100%}
+  .onboard-cta span{display:none}
+}
 </style>
 </head>
 <body>
@@ -754,38 +766,64 @@ function LeavesTray({team,leaves,onAdd,onDelete}){
 }
 
 // ── Epic sidebar ──────────────────────────────────────────────
-function EpicSidebar({epics,activeId,onSelect,onAdd,onDelete}){
+function EpicSidebar({epics,activeId,onSelect,onAdd,onDelete,collapsed,onToggle}){
+  const w=collapsed?48:220;
   return(
-    <div style={{width:220,borderRight:`1px solid ${C.hair}`,background:'#fff',display:'flex',flexDirection:'column',flexShrink:0,height:'100%'}}>
-      <div style={{padding:'20px 18px 16px',borderBottom:`1px solid ${C.hair}`,cursor:'pointer'}} onClick={()=>onSelect(null)}>
-        <div style={{fontSize:20,fontWeight:700,letterSpacing:-.5,color:C.ink}}>Brief</div>
-        <div style={{fontSize:10,fontWeight:500,letterSpacing:1.2,textTransform:'uppercase',color:C.mute,marginTop:4}}>Epics</div>
-      </div>
-      <div style={{flex:1,overflowY:'auto',padding:'0 8px'}}>
-        {epics.map(e=>{
-          const active=e.id===activeId;
-          const sc=e.stories.filter(s=>s.name.trim()).length;
-          return(
-            <div key={e.id} className="story-row" onClick={()=>onSelect(e.id)}
-              style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',borderRadius:8,cursor:'pointer',marginBottom:2,
-                background:active?C.accentBg:'transparent',border:active?'1px solid rgba(45,91,255,0.15)':'1px solid transparent'}}>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:13,fontWeight:active?600:500,color:active?C.accent:C.ink,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{e.name||'Untitled'}</div>
-                <div style={{fontSize:11,color:C.mute,marginTop:2}}>{sc} {sc===1?'story':'stories'}</div>
-              </div>
-              <div className="row-actions" onClick={ev=>{ev.stopPropagation();onDelete(e.id);}}
-                style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center',color:C.mute,fontSize:14,borderRadius:4,cursor:'pointer',flexShrink:0}}
-                onMouseEnter={ev=>{ev.currentTarget.style.color=C.warn;}} onMouseLeave={ev=>{ev.currentTarget.style.color=C.mute;}}>×</div>
-            </div>
-          );
-        })}
-      </div>
-      <div style={{padding:'12px 18px',borderTop:`1px solid ${C.hair}`}}>
-        <div onClick={onAdd}
-          style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:500,color:C.mute,border:`1px dashed ${C.hairS}`,justifyContent:'center'}}>
-          <span style={{fontSize:16,fontWeight:300,lineHeight:1}}>+</span> New epic
+    <div style={{width:w,minWidth:w,borderRight:`1px solid ${C.hair}`,background:'#fff',display:'flex',flexDirection:'column',flexShrink:0,height:'100%',transition:'width 180ms ease,min-width 180ms ease',overflow:'hidden'}}>
+      {/* Header */}
+      <div style={{padding:collapsed?'20px 0 16px':'20px 18px 16px',borderBottom:`1px solid ${C.hair}`,display:'flex',alignItems:'center',gap:10,justifyContent:collapsed?'center':'space-between'}}>
+        <div style={{cursor:'pointer',minWidth:0}} onClick={()=>onSelect(null)}>
+          {collapsed
+            ?<div style={{fontSize:20,fontWeight:700,color:C.ink,textAlign:'center'}}>B</div>
+            :<><div style={{fontSize:20,fontWeight:700,letterSpacing:-.5,color:C.ink}}>Brief</div>
+              <div style={{fontSize:10,fontWeight:500,letterSpacing:1.2,textTransform:'uppercase',color:C.mute,marginTop:4}}>Epics</div></>
+          }
         </div>
+        {!collapsed&&<div onClick={e=>{e.stopPropagation();onToggle();}} style={{width:22,height:22,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',borderRadius:4,color:C.mute,fontSize:14,flexShrink:0}}
+          onMouseEnter={e=>{e.currentTarget.style.background=C.faint;}} onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>‹</div>}
       </div>
+
+      {collapsed
+        ?<div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',paddingTop:12,gap:6}}>
+            {epics.map(e=>{
+              const active=e.id===activeId;
+              return <div key={e.id} onClick={()=>{onToggle();onSelect(e.id);}} title={e.name||'Untitled'}
+                style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:600,cursor:'pointer',
+                  background:active?C.accentBg:'transparent',color:active?C.accent:C.soft,border:active?'1px solid rgba(45,91,255,0.15)':'1px solid transparent'}}>
+                {(e.name||'U')[0].toUpperCase()}
+              </div>;
+            })}
+            <div onClick={onToggle} style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,cursor:'pointer',color:C.mute,marginTop:4}}
+              onMouseEnter={e=>{e.currentTarget.style.background=C.faint;}} onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>›</div>
+          </div>
+        :<>
+          <div style={{flex:1,overflowY:'auto',padding:'0 8px'}}>
+            {epics.map(e=>{
+              const active=e.id===activeId;
+              const sc=e.stories.filter(s=>s.name.trim()).length;
+              return(
+                <div key={e.id} className="story-row" onClick={()=>onSelect(e.id)}
+                  style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',borderRadius:8,cursor:'pointer',marginBottom:2,
+                    background:active?C.accentBg:'transparent',border:active?'1px solid rgba(45,91,255,0.15)':'1px solid transparent'}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:active?600:500,color:active?C.accent:C.ink,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{e.name||'Untitled'}</div>
+                    <div style={{fontSize:11,color:C.mute,marginTop:2}}>{sc} {sc===1?'story':'stories'}</div>
+                  </div>
+                  <div className="row-actions" onClick={ev=>{ev.stopPropagation();onDelete(e.id);}}
+                    style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center',color:C.mute,fontSize:14,borderRadius:4,cursor:'pointer',flexShrink:0}}
+                    onMouseEnter={ev=>{ev.currentTarget.style.color=C.warn;}} onMouseLeave={ev=>{ev.currentTarget.style.color=C.mute;}}>×</div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{padding:'12px 18px',borderTop:`1px solid ${C.hair}`}}>
+            <div onClick={onAdd}
+              style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:500,color:C.mute,border:`1px dashed ${C.hairS}`,justifyContent:'center'}}>
+              <span style={{fontSize:16,fontWeight:300,lineHeight:1}}>+</span> New epic
+            </div>
+          </div>
+        </>
+      }
     </div>
   );
 }
@@ -802,6 +840,7 @@ function App(){
   const [trayOpen,setTrayOpen]=useState(null);
   const [editingName,setEditingName]=useState(false);
   const [autoAdd,setAutoAdd]=useState(false);
+  const [sidebarOpen,setSidebarOpen]=useState(true);
 
   // Persist
   useEffect(()=>{save6({team,holidays,leaves,epics,activeEpicId});},[team,holidays,leaves,epics,activeEpicId]);
@@ -851,20 +890,20 @@ function App(){
       {icon:'📅',title:'See Your Timeline',desc:'A visual Gantt chart auto-schedules work around weekends, holidays, and leaves — giving you a real ship date.'},
     ];
     return(
-      <div style={{height:'100vh',display:'flex',fontFamily:C.f,background:C.bg,color:C.ink,fontSize:14}}>
-        <EpicSidebar epics={epics} activeId={activeEpicId} onSelect={setActiveEpicId} onAdd={addEpic} onDelete={deleteEpic}/>
-        <div style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',alignItems:'center',padding:'60px 40px 40px'}}>
+      <div className="onboard-wrap" style={{height:'100vh',display:'flex',fontFamily:C.f,background:C.bg,color:C.ink,fontSize:14}}>
+        <div className="onboard-sidebar"><EpicSidebar epics={epics} activeId={activeEpicId} onSelect={setActiveEpicId} onAdd={addEpic} onDelete={deleteEpic} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(s=>!s)}/></div>
+        <div className="onboard-main" style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',alignItems:'center',padding:'60px 40px 40px'}}>
           {/* Hero */}
           <div style={{textAlign:'center',maxWidth:520,marginBottom:48}}>
-            <div style={{fontSize:48,fontWeight:800,letterSpacing:-1.5,color:C.ink,marginBottom:6}}>Brief</div>
-            <div style={{fontSize:15,color:C.accent,fontWeight:500,marginBottom:20}}>Epic planning, simplified.</div>
+            <div className="onboard-hero" style={{fontSize:48,fontWeight:800,letterSpacing:-1.5,color:C.ink,marginBottom:6}}>Brief</div>
+            <div className="onboard-tagline" style={{fontSize:15,color:C.accent,fontWeight:500,marginBottom:20}}>Epic planning, simplified.</div>
             <div style={{fontSize:15,color:C.soft,lineHeight:1.7}}>
               Break your work into stories, assign developers, and get a realistic delivery date — accounting for weekends, holidays, and team availability.
             </div>
           </div>
 
           {/* Steps */}
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,maxWidth:560,width:'100%',marginBottom:40}}>
+          <div className="onboard-steps" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,maxWidth:560,width:'100%',marginBottom:40}}>
             {steps.map((s,i)=>(
               <div key={i} style={{background:'#fff',border:`1px solid ${C.hair}`,borderRadius:12,padding:'20px 18px',display:'flex',flexDirection:'column',gap:8}}>
                 <div style={{display:'flex',alignItems:'center',gap:10}}>
@@ -878,7 +917,7 @@ function App(){
           </div>
 
           {/* Features list */}
-          <div style={{display:'flex',gap:20,flexWrap:'wrap',justifyContent:'center',marginBottom:36}}>
+          <div className="onboard-features" style={{display:'flex',gap:20,flexWrap:'wrap',justifyContent:'center',marginBottom:36}}>
             {['Cross-epic busy detection','Weekend & holiday aware','Dependency chains','Person-day estimates','Leave management','Smart timeline'].map(f=>(
               <div key={f} style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:C.soft}}>
                 <div style={{width:5,height:5,borderRadius:'50%',background:C.accent,opacity:.5}}/>
@@ -888,8 +927,8 @@ function App(){
           </div>
 
           {/* CTA */}
-          <div style={{display:'flex',gap:14,alignItems:'center'}}>
-            <button onClick={addEpic} style={{display:'inline-flex',alignItems:'center',gap:8,padding:'11px 24px 12px',borderRadius:999,background:C.accent,color:'#fff',border:'none',fontSize:15,fontWeight:600,cursor:'pointer',fontFamily:C.f,boxShadow:'0 2px 8px rgba(45,91,255,0.25)',letterSpacing:-.2}}>+ Create your first epic</button>
+          <div className="onboard-cta" style={{display:'flex',gap:14,alignItems:'center'}}>
+            <button onClick={addEpic} style={{display:'inline-flex',alignItems:'center',justifyContent:'center',gap:8,padding:'11px 24px 12px',borderRadius:999,background:C.accent,color:'#fff',border:'none',fontSize:15,fontWeight:600,cursor:'pointer',fontFamily:C.f,boxShadow:'0 2px 8px rgba(45,91,255,0.25)',letterSpacing:-.2}}>+ Create your first epic</button>
             <span style={{fontSize:12,color:C.mute}}>or</span>
             <button onClick={loadExample} style={{background:'transparent',border:`1px solid ${C.hair}`,fontFamily:C.f,fontSize:13,color:C.soft,fontWeight:500,cursor:'pointer',padding:'8px 16px',borderRadius:999}}>Load example</button>
           </div>
@@ -902,7 +941,7 @@ function App(){
 
   return(
     <div style={{height:'100vh',display:'flex',fontFamily:C.f,background:C.bg,color:C.ink,fontSize:14}}>
-      <EpicSidebar epics={epics} activeId={activeEpicId} onSelect={id=>{setActiveEpicId(id);setEditingName(false);setAutoAdd(false);}} onAdd={addEpic} onDelete={deleteEpic}/>
+      <EpicSidebar epics={epics} activeId={activeEpicId} onSelect={id=>{setActiveEpicId(id);setEditingName(false);setAutoAdd(false);}} onAdd={addEpic} onDelete={deleteEpic} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(s=>!s)}/>
 
       <div style={{flex:1,display:'flex',flexDirection:'column',minWidth:0}}>
         {/* Main scrollable area */}
